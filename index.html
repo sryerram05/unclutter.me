@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unclutter.me — organize your files privately</title>
+<meta name="description" content="Sort a messy folder into neat subfolders and download it as a zip. Runs 100% in your browser — your files never leave your computer.">
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --ink: #1c2233; --muted: #6b7385;
+    --line: #e3e6ee; --accent: #3b5bdb; --accent-ink: #ffffff;
+    --good: #2b8a3e; --good-bg: #ebfbee; --warn: #c92a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151d; --card: #1b2030; --ink: #e8ebf3; --muted: #9aa3b8;
+      --line: #2c3347; --accent: #6b8cff; --accent-ink: #0d1120;
+      --good: #69db7c; --good-bg: #1b2e22; --warn: #ff8787;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.5;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 20px 60px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .tagline { color: var(--muted); margin: 0 0 20px; font-size: 1.05rem; }
+  .privacy {
+    background: var(--good-bg); color: var(--good); border-radius: 10px;
+    padding: 10px 14px; font-size: 0.92rem; margin-bottom: 24px;
+  }
+  .privacy strong { color: inherit; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px; margin-bottom: 18px;
+  }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 12px; padding: 34px 16px;
+    text-align: center; transition: border-color .15s, background .15s; cursor: pointer;
+  }
+  .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .drop .big { font-size: 1.15rem; font-weight: 600; margin-bottom: 4px; }
+  .drop .small { color: var(--muted); font-size: 0.9rem; }
+  button {
+    font: inherit; border: 0; border-radius: 9px; padding: 10px 18px;
+    background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .options label { display: flex; gap: 8px; align-items: center; margin: 6px 0; cursor: pointer; }
+  h2 { font-size: 1.1rem; margin: 0 0 12px; }
+  .summary { color: var(--muted); font-size: 0.92rem; margin-bottom: 12px; }
+  details { border-top: 1px solid var(--line); padding: 8px 0; }
+  details:first-of-type { border-top: 0; }
+  summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary .name::before { content: "📁 "; }
+  summary .meta { color: var(--muted); font-size: 0.88rem; white-space: nowrap; }
+  ul.files { margin: 6px 0 4px; padding-left: 22px; max-height: 220px; overflow: auto; font-size: 0.88rem; color: var(--muted); }
+  ul.files li { overflow-wrap: anywhere; }
+  .sub { margin-left: 18px; }
+  progress { width: 100%; height: 10px; margin-top: 12px; }
+  .status { font-size: 0.9rem; color: var(--muted); margin-top: 8px; min-height: 1.3em; }
+  .error { color: var(--warn); }
+  .hidden { display: none; }
+  footer { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🗂️ Unclutter.me</h1>
+  <p class="tagline">Turn a messy folder into neat subfolders: Documents, Images, Videos and more. Download the result as one zip.</p>
+
+  <div class="privacy">🔒 <strong>Your files never leave your computer.</strong> Everything happens inside this browser tab. Nothing is uploaded or stored. You can even turn off Wi-Fi after the page loads and it still works.</div>
+
+  <section class="card">
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a folder">
+      <div class="big">Drop a folder here</div>
+      <div class="small">or click to choose one (for example, your Downloads folder)</div>
+    </div>
+    <input id="folderInput" type="file" webkitdirectory multiple class="hidden">
+    <input id="filesInput" type="file" multiple class="hidden">
+    <div class="row" style="margin-top:12px">
+      <button class="secondary" id="pickFiles" type="button">Choose individual files instead</button>
+    </div>
+    <div class="status" id="loadStatus"></div>
+  </section>
+
+  <section class="card hidden" id="optionsCard">
+    <h2>How should we sort?</h2>
+    <div class="options">
+      <label><input type="radio" name="mode" value="type" checked> By file type (Documents, Images, Videos…)</label>
+      <label><input type="radio" name="mode" value="typeYear"> By file type, then by year</label>
+      <label><input type="checkbox" id="skipJunk" checked> Skip system junk files (.DS_Store, Thumbs.db, temp files)</label>
+    </div>
+  </section>
+
+  <section class="card hidden" id="previewCard">
+    <h2>Preview</h2>
+    <div class="summary" id="summary"></div>
+    <div id="tree"></div>
+    <div class="row" style="margin-top:16px">
+      <button id="zipBtn" type="button">⬇️ Download organized zip</button>
+      <button class="secondary" id="resetBtn" type="button">Start over</button>
+    </div>
+    <progress id="progress" class="hidden" max="100" value="0"></progress>
+    <div class="status" id="zipStatus"></div>
+  </section>
+
+  <footer>Unclutter.me prototype. Your original files are never changed; you get an organized copy.</footer>
+</main>
+
+<script>
+/* ---------- Categories ---------- */
+const CATEGORIES = [
+  ["Documents",      "pdf doc docx odt rtf txt md pages tex epub"],
+  ["Spreadsheets",   "xls xlsx xlsm ods csv tsv numbers"],
+  ["Presentations",  "ppt pptx odp key"],
+  ["Images",         "jpg jpeg png gif bmp webp heic heif svg tif tiff ico raw cr2 nef psd ai"],
+  ["Videos",         "mp4 mov avi mkv webm wmv flv m4v 3gp"],
+  ["Audio",          "mp3 wav aac flac ogg m4a wma aiff opus"],
+  ["Archives",       "zip rar 7z tar gz bz2 xz tgz"],
+  ["Installers",     "exe msi dmg pkg deb rpm apk appimage iso"],
+  ["Code",           "js ts jsx tsx py java c cpp h cs html css json xml yml yaml sh bat ipynb rb go rs php sql swift kt"],
+  ["Fonts",          "ttf otf woff woff2"],
+];
+const EXT_TO_CAT = {};
+for (const [cat, exts] of CATEGORIES) for (const e of exts.split(" ")) EXT_TO_CAT[e] = cat;
+const CAT_ORDER = [...CATEGORIES.map(c => c[0]), "Other"];
+
+function categoryOf(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return "Other";
+  return EXT_TO_CAT[name.slice(dot + 1).toLowerCase()] || "Other";
+}
+function isJunk(name) {
+  const n = name.toLowerCase();
+  return n === ".ds_store" || n === "thumbs.db" || n === "desktop.ini" ||
+         n.startsWith("._") || n.startsWith("~$") || n.endsWith(".crdownload") || n.endsWith(".part");
+}
+function formatBytes(b) {
+  if (b < 1024) return b + " B";
+  const u = ["KB", "MB", "GB", "TB"]; let i = -1;
+  do { b /= 1024; i++; } while (b >= 1024 && i < u.length - 1);
+  return b.toFixed(b < 10 ? 1 : 0) + " " + u[i];
+}
+
+/* ---------- Build the organized plan ---------- */
+function buildPlan(files, mode, skipJunk) {
+  const plan = [];          // { file, path }
+  const used = new Set();   // lower-cased paths already taken
+  let skipped = 0;
+  for (const file of files) {
+    if (skipJunk && isJunk(file.name)) { skipped++; continue; }
+    const cat = categoryOf(file.name);
+    let folder = cat;
+    if (mode === "typeYear") folder += "/" + new Date(file.lastModified || Date.now()).getFullYear();
+    // Avoid name clashes: "report.pdf", "report (2).pdf", ...
+    const dot = file.name.lastIndexOf(".");
+    const base = dot > 0 ? file.name.slice(0, dot) : file.name;
+    const ext  = dot > 0 ? file.name.slice(dot) : "";
+    let path = folder + "/" + file.name, n = 2;
+    while (used.has(path.toLowerCase())) path = `${folder}/${base} (${n++})${ext}`;
+    used.add(path.toLowerCase());
+    plan.push({ file, path });
+  }
+  return { plan, skipped };
+}
+
+// ZIP-START
+/* ---------- Tiny zip writer (no compression, runs in the browser) ---------- */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crcUpdate(crc, bytes) {
+  for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  return crc;
+}
+async function crc32OfFile(file, onBytes) {
+  let crc = 0xFFFFFFFF;
+  const reader = file.stream().getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    crc = crcUpdate(crc, value);
+    onBytes && onBytes(value.length);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function dosDateTime(ms) {
+  const d = new Date(ms || Date.now());
+  const y = d.getFullYear();
+  if (y < 1980) return { time: 0, date: (1 << 5) | 1 };
+  return {
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+    date: ((Math.min(y, 2107) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+  };
+}
+const ZIP_MAX_BYTES = 0xFFFFFFFF - 1024 * 1024 * 64; // keep under the 4 GB classic-zip limit
+const ZIP_MAX_FILES = 65535;
+
+// entries: [{ file, path }]  → returns a Blob (the zip). Files are referenced, not copied into memory.
+async function buildZip(entries, onProgress) {
+  const enc = new TextEncoder();
+  const parts = [], central = [];
+  let offset = 0, doneBytes = 0;
+  const totalBytes = entries.reduce((s, e) => s + e.file.size, 0);
+  if (entries.length > ZIP_MAX_FILES) throw new Error(`Too many files (${entries.length}). The limit is ${ZIP_MAX_FILES}.`);
+  if (totalBytes > ZIP_MAX_BYTES) throw new Error(`That's ${formatBytes(totalBytes)}. This prototype can zip up to about 4 GB at a time.`);
+
+  for (const { file, path } of entries) {
+    const name = enc.encode(path);
+    const crc = await crc32OfFile(file, n => { doneBytes += n; onProgress && onProgress(doneBytes, totalBytes); });
+    const { time, date } = dosDateTime(file.lastModified);
+    const size = file.size;
+
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true);  // UTF-8 file names
+    local.setUint16(8, 0, true);       // stored (no compression)
+    local.setUint16(10, time, true);
+    local.setUint16(12, date, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, size, true);
+    local.setUint32(22, size, true);
+    local.setUint16(26, name.length, true);
+    local.setUint16(28, 0, true);
+    parts.push(local.buffer, name, file);
+
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true);
+    cd.setUint16(4, 20, true);
+    cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0x0800, true);
+    cd.setUint16(10, 0, true);
+    cd.setUint16(12, time, true);
+    cd.setUint16(14, date, true);
+    cd.setUint32(16, crc, true);
+    cd.setUint32(20, size, true);
+    cd.setUint32(24, size, true);
+    cd.setUint16(28, name.length, true);
+    cd.setUint32(42, offset, true);
+    central.push(cd.buffer, name);
+
+    offset += 30 + name.length + size;
+  }
+  const cdSize = central.reduce((s, p) => s + p.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: "application/zip" });
+}
+// ZIP-END
+
+/* ---------- Reading folders (picker + drag and drop) ---------- */
+function readAllEntries(dirReader) {
+  return new Promise((resolve, reject) => {
+    const all = [];
+    const next = () => dirReader.readEntries(batch => {
+      if (!batch.length) resolve(all); else { all.push(...batch); next(); }
+    }, reject);
+    next();
+  });
+}
+async function walkEntry(entry, out) {
+  if (entry.isFile) {
+    out.push(await new Promise((res, rej) => entry.file(res, rej)));
+  } else if (entry.isDirectory) {
+    const children = await readAllEntries(entry.createReader());
+    for (const child of children) await walkEntry(child, out);
+  }
+}
+
+/* ---------- UI ---------- */
+const $ = id => document.getElementById(id);
+let currentFiles = [];
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function render() {
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  const { plan, skipped } = buildPlan(currentFiles, mode, $("skipJunk").checked);
+
+  // Group: top folder → (optional sub folder) → files
+  const groups = new Map();
+  for (const item of plan) {
+    const segs = item.path.split("/");
+    const top = segs[0], sub = segs.length > 2 ? segs[1] : "";
+    if (!groups.has(top)) groups.set(top, { size: 0, count: 0, subs: new Map() });
+    const g = groups.get(top);
+    g.size += item.file.size; g.count++;
+    if (!g.subs.has(sub)) g.subs.set(sub, []);
+    g.subs.get(sub).push(item);
+  }
+
+  const total = plan.reduce((s, p) => s + p.file.size, 0);
+  $("summary").textContent =
+    `${plan.length} files · ${formatBytes(total)} · ${groups.size} folders` +
+    (skipped ? ` · ${skipped} junk files skipped` : "");
+
+  let html = "";
+  for (const cat of CAT_ORDER) {
+    const g = groups.get(cat);
+    if (!g) continue;
+    html += `<details><summary><span class="name">${cat}</span><span class="meta">${g.count} files · ${formatBytes(g.size)}</span></summary>`;
+    const subs = [...g.subs.keys()].sort().reverse();
+    for (const sub of subs) {
+      const items = g.subs.get(sub);
+      if (sub) html += `<div class="sub"><strong>📁 ${escapeHtml(sub)}</strong> <span class="meta">(${items.length})</span>`;
+      html += `<ul class="files">` +
+        items.slice(0, 300).map(i => `<li>${escapeHtml(i.path.split("/").pop())} <span>· ${formatBytes(i.file.size)}</span></li>`).join("") +
+        (items.length > 300 ? `<li>…and ${items.length - 300} more</li>` : "") + `</ul>`;
+      if (sub) html += `</div>`;
+    }
+    html += `</details>`;
+  }
+  $("tree").innerHTML = html || "<p>No files to organize.</p>";
+  $("zipBtn").disabled = plan.length === 0;
+  return plan;
+}
+
+function loadFiles(files) {
+  currentFiles = files.filter(f => f && f.size >= 0);
+  $("loadStatus").textContent = currentFiles.length
+    ? `Loaded ${currentFiles.length} files.` : "No files found in that folder.";
+  $("loadStatus").classList.remove("error");
+  $("zipStatus").textContent = "";
+  $("progress").classList.add("hidden");
+  const show = currentFiles.length > 0;
+  $("optionsCard").classList.toggle("hidden", !show);
+  $("previewCard").classList.toggle("hidden", !show);
+  if (show) render();
+}
+
+const drop = $("drop");
+drop.addEventListener("click", () => $("folderInput").click());
+drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("folderInput").click(); } });
+$("pickFiles").addEventListener("click", () => $("filesInput").click());
+$("folderInput").addEventListener("change", e => loadFiles([...e.target.files]));
+$("filesInput").addEventListener("change", e => loadFiles([...e.target.files]));
+
+["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", async e => {
+  $("loadStatus").textContent = "Reading folder…";
+  try {
+    const items = [...e.dataTransfer.items];
+    const entries = items.map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+    const out = [];
+    if (entries.length) { for (const en of entries) await walkEntry(en, out); }
+    else out.push(...e.dataTransfer.files);
+    loadFiles(out);
+  } catch (err) {
+    $("loadStatus").textContent = "Couldn't read that folder. Try the click-to-choose option instead.";
+    $("loadStatus").classList.add("error");
+  }
+});
+
+document.querySelectorAll('input[name="mode"], #skipJunk').forEach(el => el.addEventListener("change", render));
+
+$("resetBtn").addEventListener("click", () => {
+  currentFiles = [];
+  $("folderInput").value = ""; $("filesInput").value = "";
+  $("optionsCard").classList.add("hidden"); $("previewCard").classList.add("hidden");
+  $("loadStatus").textContent = "";
+});
+
+$("zipBtn").addEventListener("click", async () => {
+  const plan = render();
+  const btn = $("zipBtn"), bar = $("progress"), status = $("zipStatus");
+  btn.disabled = true; bar.classList.remove("hidden"); bar.value = 0;
+  status.classList.remove("error"); status.textContent = "Building your zip…";
+  try {
+    const blob = await buildZip(plan, (done, total) => {
+      bar.value = total ? (done / total) * 100 : 100;
+    });
+    bar.value = 100;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "organized-files.zip";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    status.textContent = `Done! Saved organized-files.zip (${formatBytes(blob.size)}). Your original files weren't changed.`;
+  } catch (err) {
+    status.textContent = err.message || "Something went wrong while building the zip.";
+    status.classList.add("error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
