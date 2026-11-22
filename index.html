@@ -56,7 +56,10 @@
   details:first-of-type { border-top: 0; }
   summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; list-style: none; }
   summary::-webkit-details-marker { display: none; }
-  summary .name::before { content: "📁 "; }
+  summary .name.new::before { content: "✨ "; }
+  summary .name.kept::before { content: "📂 "; }
+  h3 { font-size: 0.95rem; margin: 18px 0 6px; color: var(--muted); font-weight: 600; }
+  h3:first-child { margin-top: 0; }
   summary .meta { color: var(--muted); font-size: 0.88rem; white-space: nowrap; }
   ul.files { margin: 6px 0 4px; padding-left: 22px; max-height: 220px; overflow: auto; font-size: 0.88rem; color: var(--muted); }
   ul.files li { overflow-wrap: anywhere; }
@@ -71,7 +74,7 @@
 <body>
 <main>
   <h1>🗂️ Unclutter.me</h1>
-  <p class="tagline">Turn a messy folder into neat subfolders: Documents, Images, Videos and more. Download the result as one zip.</p>
+  <p class="tagline">Sort the loose files in a messy folder into neat new folders: Documents, Images, Videos and more. Folders you already made stay exactly as they are. Download the result as one zip.</p>
 
   <div class="privacy">🔒 <strong>Your files never leave your computer.</strong> Everything happens inside this browser tab. Nothing is uploaded or stored. You can even turn off Wi-Fi after the page loads and it still works.</div>
 
@@ -147,26 +150,61 @@ function formatBytes(b) {
   return b.toFixed(b < 10 ? 1 : 0) + " " + u[i];
 }
 
-/* ---------- Build the organized plan ---------- */
-function buildPlan(files, mode, skipJunk) {
-  const plan = [];          // { file, path }
-  const used = new Set();   // lower-cased paths already taken
+/* ---------- Build the organized plan ----------
+   items: [{ file, rel }]  rel = path inside the chosen folder, e.g. "photo.jpg" or "School/Math/hw1.pdf"
+   dirs:  ["School", "School/Math", ...]  (folders seen, so empty ones are kept too)
+   Rule: loose files (directly in the chosen folder) get sorted into new folders.
+         Anything already inside a folder the user made stays exactly where it is. */
+function buildPlan(items, dirs, mode, skipJunk) {
+  const plan = [];                 // { file, path } or { dir: true, path }
+  const used = new Set();
+  const kept = new Map();          // user's top-level folder → { count, size, files: [] }
+  const sorted = new Map();        // our new folder → { count, size, subs: Map(sub → [entries]) }
   let skipped = 0;
-  for (const file of files) {
+
+  // 1) The user's own folders: keep every path exactly as it is.
+  const userTop = new Set();
+  for (const d of dirs) userTop.add(d.split("/")[0]);
+  for (const it of items) if (it.rel.includes("/")) userTop.add(it.rel.split("/")[0]);
+  for (const name of userTop) kept.set(name, { count: 0, size: 0, files: [] });
+
+  for (const d of dirs) { plan.push({ dir: true, path: d }); used.add(d.toLowerCase()); }
+  for (const it of items) {
+    if (!it.rel.includes("/")) continue;
+    if (skipJunk && isJunk(it.file.name)) { skipped++; continue; }
+    plan.push({ file: it.file, path: it.rel });
+    used.add(it.rel.toLowerCase());
+    const k = kept.get(it.rel.split("/")[0]);
+    k.count++; k.size += it.file.size; k.files.push(it.rel);
+  }
+
+  // 2) Our new folders, named so they never merge into a folder the user already has.
+  const userTopLower = new Set([...userTop].map(n => n.toLowerCase()));
+  const folderNameFor = cat => userTopLower.has(cat.toLowerCase()) ? `${cat} (sorted)` : cat;
+
+  for (const it of items) {
+    if (it.rel.includes("/")) continue;
+    const file = it.file;
     if (skipJunk && isJunk(file.name)) { skipped++; continue; }
     const cat = categoryOf(file.name);
-    let folder = cat;
-    if (mode === "typeYear") folder += "/" + new Date(file.lastModified || Date.now()).getFullYear();
-    // Avoid name clashes: "report.pdf", "report (2).pdf", ...
+    const top = folderNameFor(cat);
+    const sub = mode === "typeYear" ? String(new Date(file.lastModified || Date.now()).getFullYear()) : "";
+    const folder = sub ? `${top}/${sub}` : top;
     const dot = file.name.lastIndexOf(".");
     const base = dot > 0 ? file.name.slice(0, dot) : file.name;
     const ext  = dot > 0 ? file.name.slice(dot) : "";
-    let path = folder + "/" + file.name, n = 2;
+    let path = `${folder}/${file.name}`, n = 2;
     while (used.has(path.toLowerCase())) path = `${folder}/${base} (${n++})${ext}`;
     used.add(path.toLowerCase());
-    plan.push({ file, path });
+    const entry = { file, path, cat };
+    plan.push(entry);
+    if (!sorted.has(top)) sorted.set(top, { cat, count: 0, size: 0, subs: new Map() });
+    const g = sorted.get(top);
+    g.count++; g.size += file.size;
+    if (!g.subs.has(sub)) g.subs.set(sub, []);
+    g.subs.get(sub).push(entry);
   }
-  return { plan, skipped };
+  return { plan, skipped, kept, sorted };
 }
 
 // ZIP-START
@@ -207,20 +245,22 @@ function dosDateTime(ms) {
 const ZIP_MAX_BYTES = 0xFFFFFFFF - 1024 * 1024 * 64; // keep under the 4 GB classic-zip limit
 const ZIP_MAX_FILES = 65535;
 
-// entries: [{ file, path }]  → returns a Blob (the zip). Files are referenced, not copied into memory.
+// entries: [{ file, path }] or [{ dir: true, path }] → returns a Blob (the zip).
+// Files are referenced, not copied into memory.
 async function buildZip(entries, onProgress) {
   const enc = new TextEncoder();
   const parts = [], central = [];
   let offset = 0, doneBytes = 0;
-  const totalBytes = entries.reduce((s, e) => s + e.file.size, 0);
+  const totalBytes = entries.reduce((s, e) => s + (e.dir ? 0 : e.file.size), 0);
   if (entries.length > ZIP_MAX_FILES) throw new Error(`Too many files (${entries.length}). The limit is ${ZIP_MAX_FILES}.`);
   if (totalBytes > ZIP_MAX_BYTES) throw new Error(`That's ${formatBytes(totalBytes)}. This prototype can zip up to about 4 GB at a time.`);
 
-  for (const { file, path } of entries) {
-    const name = enc.encode(path);
-    const crc = await crc32OfFile(file, n => { doneBytes += n; onProgress && onProgress(doneBytes, totalBytes); });
-    const { time, date } = dosDateTime(file.lastModified);
-    const size = file.size;
+  for (const e of entries) {
+    const isDir = !!e.dir;
+    const name = enc.encode(isDir ? e.path.replace(/\/?$/, "/") : e.path);
+    const crc = isDir ? 0 : await crc32OfFile(e.file, n => { doneBytes += n; onProgress && onProgress(doneBytes, totalBytes); });
+    const { time, date } = dosDateTime(isDir ? Date.now() : e.file.lastModified);
+    const size = isDir ? 0 : e.file.size;
 
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
@@ -234,7 +274,8 @@ async function buildZip(entries, onProgress) {
     local.setUint32(22, size, true);
     local.setUint16(26, name.length, true);
     local.setUint16(28, 0, true);
-    parts.push(local.buffer, name, file);
+    parts.push(local.buffer, name);
+    if (!isDir) parts.push(e.file);
 
     const cd = new DataView(new ArrayBuffer(46));
     cd.setUint32(0, 0x02014b50, true);
@@ -248,6 +289,7 @@ async function buildZip(entries, onProgress) {
     cd.setUint32(20, size, true);
     cd.setUint32(24, size, true);
     cd.setUint16(28, name.length, true);
+    cd.setUint32(38, isDir ? 0x10 : 0, true); // directory attribute
     cd.setUint32(42, offset, true);
     central.push(cd.buffer, name);
 
@@ -274,96 +316,129 @@ function readAllEntries(dirReader) {
     next();
   });
 }
-async function walkEntry(entry, out) {
+// Collects { file, path } for files and path strings for folders, paths relative to `prefix`.
+async function walkEntry(entry, prefix, files, dirs) {
+  const path = prefix ? `${prefix}/${entry.name}` : entry.name;
   if (entry.isFile) {
-    out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    files.push({ file: await new Promise((res, rej) => entry.file(res, rej)), rel: path });
   } else if (entry.isDirectory) {
+    dirs.push(path);
     const children = await readAllEntries(entry.createReader());
-    for (const child of children) await walkEntry(child, out);
+    for (const child of children) await walkEntry(child, path, files, dirs);
   }
 }
 
 /* ---------- UI ---------- */
 const $ = id => document.getElementById(id);
-let currentFiles = [];
+let state = { items: [], dirs: [], rootName: "Organized" };
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+function fileList(names) {
+  return `<ul class="files">` +
+    names.slice(0, 300).map(n => `<li>${n}</li>`).join("") +
+    (names.length > 300 ? `<li>…and ${names.length - 300} more</li>` : "") + `</ul>`;
+}
 
 function render() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  const { plan, skipped } = buildPlan(currentFiles, mode, $("skipJunk").checked);
+  const result = buildPlan(state.items, state.dirs, mode, $("skipJunk").checked);
+  const { plan, skipped, kept, sorted } = result;
 
-  // Group: top folder → (optional sub folder) → files
-  const groups = new Map();
-  for (const item of plan) {
-    const segs = item.path.split("/");
-    const top = segs[0], sub = segs.length > 2 ? segs[1] : "";
-    if (!groups.has(top)) groups.set(top, { size: 0, count: 0, subs: new Map() });
-    const g = groups.get(top);
-    g.size += item.file.size; g.count++;
-    if (!g.subs.has(sub)) g.subs.set(sub, []);
-    g.subs.get(sub).push(item);
-  }
-
-  const total = plan.reduce((s, p) => s + p.file.size, 0);
+  const files = plan.filter(p => !p.dir);
+  const total = files.reduce((s, p) => s + p.file.size, 0);
+  const looseCount = [...sorted.values()].reduce((s, g) => s + g.count, 0);
   $("summary").textContent =
-    `${plan.length} files · ${formatBytes(total)} · ${groups.size} folders` +
+    `${files.length} files · ${formatBytes(total)} · ${kept.size} of your folders kept · ` +
+    `${looseCount} loose files sorted into ${sorted.size} new folders` +
     (skipped ? ` · ${skipped} junk files skipped` : "");
 
   let html = "";
-  for (const cat of CAT_ORDER) {
-    const g = groups.get(cat);
-    if (!g) continue;
-    html += `<details><summary><span class="name">${cat}</span><span class="meta">${g.count} files · ${formatBytes(g.size)}</span></summary>`;
-    const subs = [...g.subs.keys()].sort().reverse();
-    for (const sub of subs) {
-      const items = g.subs.get(sub);
-      if (sub) html += `<div class="sub"><strong>📁 ${escapeHtml(sub)}</strong> <span class="meta">(${items.length})</span>`;
-      html += `<ul class="files">` +
-        items.slice(0, 300).map(i => `<li>${escapeHtml(i.path.split("/").pop())} <span>· ${formatBytes(i.file.size)}</span></li>`).join("") +
-        (items.length > 300 ? `<li>…and ${items.length - 300} more</li>` : "") + `</ul>`;
-      if (sub) html += `</div>`;
+  if (sorted.size) {
+    html += `<h3>✨ New folders for your loose files</h3>`;
+    const order = [...sorted.keys()].sort((a, b) =>
+      CAT_ORDER.indexOf(sorted.get(a).cat) - CAT_ORDER.indexOf(sorted.get(b).cat));
+    for (const top of order) {
+      const g = sorted.get(top);
+      html += `<details><summary><span class="name new">${escapeHtml(top)}</span><span class="meta">${g.count} files · ${formatBytes(g.size)}</span></summary>`;
+      for (const sub of [...g.subs.keys()].sort().reverse()) {
+        const entries = g.subs.get(sub);
+        const names = entries.map(e => `${escapeHtml(e.path.split("/").pop())} <span>· ${formatBytes(e.file.size)}</span>`);
+        html += sub ? `<div class="sub"><strong>📁 ${escapeHtml(sub)}</strong> <span class="meta">(${entries.length})</span>${fileList(names)}</div>` : fileList(names);
+      }
+      html += `</details>`;
     }
-    html += `</details>`;
+  }
+  if (kept.size) {
+    html += `<h3>📂 Your folders, kept exactly as they are</h3>`;
+    for (const name of [...kept.keys()].sort((a, b) => a.localeCompare(b))) {
+      const k = kept.get(name);
+      html += `<details><summary><span class="name kept">${escapeHtml(name)}</span><span class="meta">${k.count} files · ${formatBytes(k.size)}</span></summary>` +
+        (k.files.length ? fileList(k.files.map(f => escapeHtml(f.slice(name.length + 1)))) : `<p class="meta">Empty folder</p>`) +
+        `</details>`;
+    }
   }
   $("tree").innerHTML = html || "<p>No files to organize.</p>";
   $("zipBtn").disabled = plan.length === 0;
   return plan;
 }
 
-function loadFiles(files) {
-  currentFiles = files.filter(f => f && f.size >= 0);
-  $("loadStatus").textContent = currentFiles.length
-    ? `Loaded ${currentFiles.length} files.` : "No files found in that folder.";
+function loadItems(items, dirs, rootName) {
+  state = { items: items.filter(i => i && i.file), dirs, rootName: rootName || "Organized" };
+  const ok = state.items.length > 0 || dirs.length > 0;
+  $("loadStatus").textContent = ok ? `Loaded ${state.items.length} files from “${state.rootName}”.` : "No files found in that folder.";
   $("loadStatus").classList.remove("error");
   $("zipStatus").textContent = "";
   $("progress").classList.add("hidden");
-  const show = currentFiles.length > 0;
-  $("optionsCard").classList.toggle("hidden", !show);
-  $("previewCard").classList.toggle("hidden", !show);
-  if (show) render();
+  $("optionsCard").classList.toggle("hidden", !ok);
+  $("previewCard").classList.toggle("hidden", !ok);
+  if (ok) render();
 }
+
+// Folder picker: paths look like "Downloads/School/hw1.pdf" → strip the chosen folder's own name.
+$("folderInput").addEventListener("change", e => {
+  const list = [...e.target.files];
+  if (!list.length) return;
+  const root = (list[0].webkitRelativePath || "").split("/")[0] || "Organized";
+  const items = [], dirSet = new Set();
+  for (const f of list) {
+    const rel = (f.webkitRelativePath || f.name).split("/").slice(1).join("/") || f.name;
+    items.push({ file: f, rel });
+    const segs = rel.split("/");
+    for (let i = 1; i < segs.length; i++) dirSet.add(segs.slice(0, i).join("/"));
+  }
+  loadItems(items, [...dirSet], root);
+});
+$("filesInput").addEventListener("change", e => {
+  loadItems([...e.target.files].map(f => ({ file: f, rel: f.name })), [], "Organized");
+});
 
 const drop = $("drop");
 drop.addEventListener("click", () => $("folderInput").click());
 drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("folderInput").click(); } });
 $("pickFiles").addEventListener("click", () => $("filesInput").click());
-$("folderInput").addEventListener("change", e => loadFiles([...e.target.files]));
-$("filesInput").addEventListener("change", e => loadFiles([...e.target.files]));
 
 ["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", async e => {
   $("loadStatus").textContent = "Reading folder…";
   try {
-    const items = [...e.dataTransfer.items];
-    const entries = items.map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
-    const out = [];
-    if (entries.length) { for (const en of entries) await walkEntry(en, out); }
-    else out.push(...e.dataTransfer.files);
-    loadFiles(out);
+    const entries = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+    const items = [], dirs = [];
+    let root = "Organized";
+    if (entries.length === 1 && entries[0].isDirectory) {
+      // One folder dropped: organize what's inside it.
+      root = entries[0].name;
+      const children = await readAllEntries(entries[0].createReader());
+      for (const c of children) await walkEntry(c, "", items, dirs);
+    } else if (entries.length) {
+      // Several things dropped: dropped folders are kept as-is, dropped files get sorted.
+      for (const en of entries) await walkEntry(en, "", items, dirs);
+    } else {
+      for (const f of e.dataTransfer.files) items.push({ file: f, rel: f.name });
+    }
+    loadItems(items, dirs, root);
   } catch (err) {
     $("loadStatus").textContent = "Couldn't read that folder. Try the click-to-choose option instead.";
     $("loadStatus").classList.add("error");
@@ -373,7 +448,7 @@ drop.addEventListener("drop", async e => {
 document.querySelectorAll('input[name="mode"], #skipJunk').forEach(el => el.addEventListener("change", render));
 
 $("resetBtn").addEventListener("click", () => {
-  currentFiles = [];
+  state = { items: [], dirs: [], rootName: "Organized" };
   $("folderInput").value = ""; $("filesInput").value = "";
   $("optionsCard").classList.add("hidden"); $("previewCard").classList.add("hidden");
   $("loadStatus").textContent = "";
@@ -382,19 +457,20 @@ $("resetBtn").addEventListener("click", () => {
 $("zipBtn").addEventListener("click", async () => {
   const plan = render();
   const btn = $("zipBtn"), bar = $("progress"), status = $("zipStatus");
+  const top = `${state.rootName} (organized)`;
+  const zipEntries = [{ dir: true, path: top }, ...plan.map(p => ({ ...p, path: `${top}/${p.path}` }))];
   btn.disabled = true; bar.classList.remove("hidden"); bar.value = 0;
   status.classList.remove("error"); status.textContent = "Building your zip…";
   try {
-    const blob = await buildZip(plan, (done, total) => {
-      bar.value = total ? (done / total) * 100 : 100;
-    });
+    const blob = await buildZip(zipEntries, (done, total) => { bar.value = total ? (done / total) * 100 : 100; });
     bar.value = 100;
+    const fileName = `${state.rootName}-organized.zip`.replace(/[\\/:*?"<>|]/g, "_");
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "organized-files.zip";
+    a.href = url; a.download = fileName;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
-    status.textContent = `Done! Saved organized-files.zip (${formatBytes(blob.size)}). Your original files weren't changed.`;
+    status.textContent = `Done! Saved ${fileName} (${formatBytes(blob.size)}). Your original files weren't changed.`;
   } catch (err) {
     status.textContent = err.message || "Something went wrong while building the zip.";
     status.classList.add("error");
