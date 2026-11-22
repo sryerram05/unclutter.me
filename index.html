@@ -63,6 +63,13 @@
   summary .name.kept::before { content: "📂 "; }
   h3 { font-size: 0.95rem; margin: 18px 0 6px; color: var(--muted); font-weight: 600; }
   h3:first-child { margin-top: 0; }
+  #folderList { margin-top: 12px; }
+  .folder-row { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+                padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .folder-row .fname { overflow-wrap: anywhere; }
+  .folder-row select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+                       background: var(--card); color: var(--ink); max-width: 100%; }
+  .meta { color: var(--muted); font-size: 0.88rem; }
   summary .meta { color: var(--muted); font-size: 0.88rem; white-space: nowrap; }
   ul.files { margin: 6px 0 4px; padding-left: 22px; max-height: 220px; overflow: auto; font-size: 0.88rem; color: var(--muted); }
   ul.files li { overflow-wrap: anywhere; }
@@ -77,7 +84,7 @@
 <body>
 <main>
   <h1>🗂️ Unclutter.me</h1>
-  <p class="tagline">Sort the loose files in a messy folder into neat new folders: Documents, Images, Videos and more. Folders you already made stay exactly as they are. Download the result as one zip.</p>
+  <p class="tagline">Sort the loose files in a messy folder into neat new folders: Documents, Images, Videos and more. Folders you already made are never split up, and you choose whether to keep them in place or tuck them into the new folders. Download the result as one zip.</p>
 
   <div class="privacy">🔒 <strong>Your files never leave your computer.</strong> Everything happens inside this browser tab. Nothing is uploaded or stored. You can even turn off Wi-Fi after the page loads and it still works.</div>
 
@@ -101,6 +108,16 @@
       <label><input type="radio" name="mode" value="typeYear"> By file type, then by year</label>
       <label><input type="checkbox" id="skipJunk" checked> Skip system junk files (.DS_Store, Thumbs.db, temp files)</label>
     </div>
+  </section>
+
+  <section class="card hidden" id="foldersCard">
+    <h2>Sort your existing folders too?</h2>
+    <p class="summary">Your folders never get split up. Whatever you choose, everything inside each folder stays exactly as it is.</p>
+    <div class="options">
+      <label><input type="radio" name="folderMode" value="keep" checked> No, keep my folders where they are</label>
+      <label><input type="radio" name="folderMode" value="move"> Yes, move each folder into the new folder that matches what's mostly inside it</label>
+    </div>
+    <div id="folderList"></div>
   </section>
 
   <section class="card hidden" id="previewCard">
@@ -156,35 +173,72 @@ function formatBytes(b) {
 /* ---------- Build the organized plan ----------
    items: [{ file, rel }]  rel = path inside the chosen folder, e.g. "photo.jpg" or "School/Math/hw1.pdf"
    dirs:  ["School", "School/Math", ...]  (folders seen, so empty ones are kept too)
-   Rule: loose files (directly in the chosen folder) get sorted into new folders.
-         Anything already inside a folder the user made stays exactly where it is. */
-function buildPlan(items, dirs, mode, skipJunk) {
-  const plan = [];                 // { file, path } or { dir: true, path }
+   folderMode: "keep" → the user's folders stay where they are
+               "move" → each folder moves (with everything inside it, untouched) into its suggested new folder
+   overrides:  { folderName: "" | categoryName }  per-folder choices that beat folderMode ("" = keep) */
+function buildPlan(items, dirs, mode, skipJunk, folderMode = "keep", overrides = {}) {
+  const plan = [];
   const used = new Set();
-  const kept = new Map();          // user's top-level folder → { count, size, files: [] }
-  const sorted = new Map();        // our new folder → { count, size, subs: Map(sub → [entries]) }
+  const sorted = new Map();        // our new folder → { cat, count, size, subs: Map(sub → [entries]), folders: [] }
+  const kept = [];                 // user folders left at the top level
   let skipped = 0;
 
-  // 1) The user's own folders: keep every path exactly as it is.
-  const userTop = new Set();
-  for (const d of dirs) userTop.add(d.split("/")[0]);
-  for (const it of items) if (it.rel.includes("/")) userTop.add(it.rel.split("/")[0]);
-  for (const name of userTop) kept.set(name, { count: 0, size: 0, files: [] });
+  // 1) Look at each of the user's top-level folders: what's mostly inside it?
+  const folders = new Map();
+  const touch = name => {
+    if (!folders.has(name)) folders.set(name, { name, count: 0, size: 0, files: [], catCounts: {} });
+    return folders.get(name);
+  };
+  for (const d of dirs) touch(d.split("/")[0]);
+  for (const it of items) {
+    if (!it.rel.includes("/")) continue;
+    const f = touch(it.rel.split("/")[0]);
+    if (skipJunk && isJunk(it.file.name)) continue;
+    const cat = categoryOf(it.file.name);
+    f.count++; f.size += it.file.size; f.files.push(it.rel);
+    f.catCounts[cat] = (f.catCounts[cat] || 0) + 1;
+  }
+  for (const f of folders.values()) {
+    f.suggested = Object.entries(f.catCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "Other";
+    f.choice = Object.prototype.hasOwnProperty.call(overrides, f.name)
+      ? overrides[f.name] : (folderMode === "move" ? f.suggested : "");
+  }
 
-  for (const d of dirs) { plan.push({ dir: true, path: d }); used.add(d.toLowerCase()); }
+  // 2) Our new folders never merge into a folder the user is keeping at the top.
+  const keptLower = new Set([...folders.values()].filter(f => !f.choice).map(f => f.name.toLowerCase()));
+  const folderNameFor = cat => keptLower.has(cat.toLowerCase()) ? `${cat} (sorted)` : cat;
+  const group = (top, cat) => {
+    if (!sorted.has(top)) sorted.set(top, { cat, count: 0, size: 0, subs: new Map(), folders: [] });
+    return sorted.get(top);
+  };
+
+  // 3) Decide where each user folder goes (its contents never change).
+  const names = [...folders.keys()].sort((a, b) => a.localeCompare(b));
+  for (const name of names) used.add(name.toLowerCase());
+  for (const name of names) {
+    const f = folders.get(name);
+    if (!f.choice) { f.dest = name; kept.push(f); continue; }
+    const top = folderNameFor(f.choice);
+    let dest = `${top}/${name}`, n = 2;
+    while (used.has(dest.toLowerCase())) dest = `${top}/${name} (${n++})`;
+    used.add(dest.toLowerCase());
+    f.dest = dest;
+    const g = group(top, f.choice);
+    g.count += f.count; g.size += f.size;
+    g.folders.push({ name: dest.slice(top.length + 1), count: f.count, size: f.size });
+  }
+  const remap = rel => { const top = rel.split("/")[0]; return folders.get(top).dest + rel.slice(top.length); };
+
+  for (const d of dirs) plan.push({ dir: true, path: remap(d) });
   for (const it of items) {
     if (!it.rel.includes("/")) continue;
     if (skipJunk && isJunk(it.file.name)) { skipped++; continue; }
-    plan.push({ file: it.file, path: it.rel });
-    used.add(it.rel.toLowerCase());
-    const k = kept.get(it.rel.split("/")[0]);
-    k.count++; k.size += it.file.size; k.files.push(it.rel);
+    const path = remap(it.rel);
+    plan.push({ file: it.file, path });
+    used.add(path.toLowerCase());
   }
 
-  // 2) Our new folders, named so they never merge into a folder the user already has.
-  const userTopLower = new Set([...userTop].map(n => n.toLowerCase()));
-  const folderNameFor = cat => userTopLower.has(cat.toLowerCase()) ? `${cat} (sorted)` : cat;
-
+  // 4) Loose files go into the new folders.
   for (const it of items) {
     if (it.rel.includes("/")) continue;
     const file = it.file;
@@ -201,13 +255,12 @@ function buildPlan(items, dirs, mode, skipJunk) {
     used.add(path.toLowerCase());
     const entry = { file, path, cat };
     plan.push(entry);
-    if (!sorted.has(top)) sorted.set(top, { cat, count: 0, size: 0, subs: new Map() });
-    const g = sorted.get(top);
+    const g = group(top, cat);
     g.count++; g.size += file.size;
     if (!g.subs.has(sub)) g.subs.set(sub, []);
     g.subs.get(sub).push(entry);
   }
-  return { plan, skipped, kept, sorted };
+  return { plan, skipped, kept, sorted, folders: names.map(n => folders.get(n)) };
 }
 
 // ZIP-START
@@ -333,7 +386,7 @@ async function walkEntry(entry, prefix, files, dirs) {
 
 /* ---------- UI ---------- */
 const $ = id => document.getElementById(id);
-let state = { items: [], dirs: [], rootName: "Organized" };
+let state = { items: [], dirs: [], rootName: "Organized", overrides: {} };
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -344,27 +397,53 @@ function fileList(names) {
     (names.length > 300 ? `<li>…and ${names.length - 300} more</li>` : "") + `</ul>`;
 }
 
+function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
+
 function render() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  const result = buildPlan(state.items, state.dirs, mode, $("skipJunk").checked);
-  const { plan, skipped, kept, sorted } = result;
+  const folderMode = document.querySelector('input[name="folderMode"]:checked').value;
+  const result = buildPlan(state.items, state.dirs, mode, $("skipJunk").checked, folderMode, state.overrides);
+  const { plan, skipped, kept, sorted, folders } = result;
 
+  // ---- The "your folders" question ----
+  $("foldersCard").classList.toggle("hidden", folders.length === 0);
+  $("folderList").innerHTML = folders.map(f => {
+    const opts = [`<option value="">Keep where it is</option>`].concat(
+      CAT_ORDER.map(c => `<option value="${c}"${f.choice === c ? " selected" : ""}>Move into ${c}${c === f.suggested ? " (suggested)" : ""}</option>`)
+    ).join("");
+    return `<div class="folder-row">
+      <span class="fname">📂 ${escapeHtml(f.name)} <span class="meta">${plural(f.count, "file")}</span></span>
+      <select data-folder="${escapeHtml(f.name)}" aria-label="Where should ${escapeHtml(f.name)} go?">${opts}</select>
+    </div>`;
+  }).join("");
+  $("folderList").querySelectorAll("select").forEach(sel => {
+    if (sel.value === "" ) sel.querySelector('option[value=""]').selected = true;
+    sel.addEventListener("change", () => { state.overrides[sel.dataset.folder] = sel.value; render(); });
+  });
+
+  // ---- Summary ----
   const files = plan.filter(p => !p.dir);
   const total = files.reduce((s, p) => s + p.file.size, 0);
-  const looseCount = [...sorted.values()].reduce((s, g) => s + g.count, 0);
+  const looseCount = [...sorted.values()].reduce((s, g) => s + [...g.subs.values()].reduce((a, l) => a + l.length, 0), 0);
+  const movedCount = folders.length - kept.length;
   $("summary").textContent =
-    `${files.length} files · ${formatBytes(total)} · ${kept.size} of your folders kept · ` +
-    `${looseCount} loose files sorted into ${sorted.size} new folders` +
-    (skipped ? ` · ${skipped} junk files skipped` : "");
+    `${plural(files.length, "file")} · ${formatBytes(total)} · ${plural(looseCount, "loose file")} sorted` +
+    (movedCount ? ` · ${plural(movedCount, "folder")} moved` : "") +
+    (kept.length ? ` · ${plural(kept.length, "folder")} kept in place` : "") +
+    (skipped ? ` · ${plural(skipped, "junk file")} skipped` : "");
 
+  // ---- Preview tree ----
   let html = "";
   if (sorted.size) {
-    html += `<h3>✨ New folders for your loose files</h3>`;
+    html += `<h3>✨ New folders</h3>`;
     const order = [...sorted.keys()].sort((a, b) =>
-      CAT_ORDER.indexOf(sorted.get(a).cat) - CAT_ORDER.indexOf(sorted.get(b).cat));
+      CAT_ORDER.indexOf(sorted.get(a).cat) - CAT_ORDER.indexOf(sorted.get(b).cat) || a.localeCompare(b));
     for (const top of order) {
       const g = sorted.get(top);
-      html += `<details><summary><span class="name new">${escapeHtml(top)}</span><span class="meta">${g.count} file${g.count === 1 ? "" : "s"} · ${formatBytes(g.size)}</span></summary>`;
+      html += `<details><summary><span class="name new">${escapeHtml(top)}</span><span class="meta">${plural(g.count, "file")} · ${formatBytes(g.size)}</span></summary>`;
+      for (const f of g.folders.sort((a, b) => a.name.localeCompare(b.name))) {
+        html += `<div class="sub">📂 <strong>${escapeHtml(f.name)}</strong> <span class="meta">(your folder, ${plural(f.count, "file")}, unchanged inside)</span></div>`;
+      }
       for (const sub of [...g.subs.keys()].sort().reverse()) {
         const entries = g.subs.get(sub);
         const names = entries.map(e => `${escapeHtml(e.path.split("/").pop())} <span>· ${formatBytes(e.file.size)}</span>`);
@@ -373,12 +452,11 @@ function render() {
       html += `</details>`;
     }
   }
-  if (kept.size) {
-    html += `<h3>📂 Your folders, kept exactly as they are</h3>`;
-    for (const name of [...kept.keys()].sort((a, b) => a.localeCompare(b))) {
-      const k = kept.get(name);
-      html += `<details><summary><span class="name kept">${escapeHtml(name)}</span><span class="meta">${k.count} file${k.count === 1 ? "" : "s"} · ${formatBytes(k.size)}</span></summary>` +
-        (k.files.length ? fileList(k.files.map(f => escapeHtml(f.slice(name.length + 1)))) : `<p class="meta">Empty folder</p>`) +
+  if (kept.length) {
+    html += `<h3>📂 Your folders, kept in place</h3>`;
+    for (const k of kept) {
+      html += `<details><summary><span class="name kept">${escapeHtml(k.name)}</span><span class="meta">${plural(k.count, "file")} · ${formatBytes(k.size)}</span></summary>` +
+        (k.files.length ? fileList(k.files.map(f => escapeHtml(f.slice(k.name.length + 1)))) : `<p class="meta">Empty folder</p>`) +
         `</details>`;
     }
   }
@@ -388,15 +466,15 @@ function render() {
 }
 
 function loadItems(items, dirs, rootName) {
-  state = { items: items.filter(i => i && i.file), dirs, rootName: rootName || "Organized" };
+  state = { items: items.filter(i => i && i.file), dirs, rootName: rootName || "Organized", overrides: {} };
   const ok = state.items.length > 0 || dirs.length > 0;
-  $("loadStatus").textContent = ok ? `Loaded ${state.items.length} files from “${state.rootName}”.` : "No files found in that folder.";
+  $("loadStatus").textContent = ok ? `Loaded ${plural(state.items.length, "file")} from “${state.rootName}”.` : "No files found in that folder.";
   $("loadStatus").classList.remove("error");
   $("zipStatus").textContent = "";
   $("progress").classList.add("hidden");
   $("optionsCard").classList.toggle("hidden", !ok);
   $("previewCard").classList.toggle("hidden", !ok);
-  if (ok) render();
+  if (ok) render(); else $("foldersCard").classList.add("hidden");
 }
 
 // Folder picker: paths look like "Downloads/School/hw1.pdf" → strip the chosen folder's own name.
@@ -449,11 +527,12 @@ drop.addEventListener("drop", async e => {
 });
 
 document.querySelectorAll('input[name="mode"], #skipJunk').forEach(el => el.addEventListener("change", render));
+document.querySelectorAll('input[name="folderMode"]').forEach(el => el.addEventListener("change", () => { state.overrides = {}; render(); }));
 
 $("resetBtn").addEventListener("click", () => {
-  state = { items: [], dirs: [], rootName: "Organized" };
+  state = { items: [], dirs: [], rootName: "Organized", overrides: {} };
   $("folderInput").value = ""; $("filesInput").value = "";
-  $("optionsCard").classList.add("hidden"); $("previewCard").classList.add("hidden");
+  $("optionsCard").classList.add("hidden"); $("previewCard").classList.add("hidden"); $("foldersCard").classList.add("hidden");
   $("loadStatus").textContent = "";
 });
 
