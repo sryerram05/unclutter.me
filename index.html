@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- Security rule: this page may not send or load anything over the network.
+     Your files physically can't be uploaded, even by mistake. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Unclutter.me — organize your files privately</title>
 <meta name="description" content="Sort a messy folder into neat subfolders and download it as a zip. Runs 100% in your browser — your files never leave your computer.">
@@ -361,7 +364,7 @@ function render() {
       CAT_ORDER.indexOf(sorted.get(a).cat) - CAT_ORDER.indexOf(sorted.get(b).cat));
     for (const top of order) {
       const g = sorted.get(top);
-      html += `<details><summary><span class="name new">${escapeHtml(top)}</span><span class="meta">${g.count} files · ${formatBytes(g.size)}</span></summary>`;
+      html += `<details><summary><span class="name new">${escapeHtml(top)}</span><span class="meta">${g.count} file${g.count === 1 ? "" : "s"} · ${formatBytes(g.size)}</span></summary>`;
       for (const sub of [...g.subs.keys()].sort().reverse()) {
         const entries = g.subs.get(sub);
         const names = entries.map(e => `${escapeHtml(e.path.split("/").pop())} <span>· ${formatBytes(e.file.size)}</span>`);
@@ -374,7 +377,7 @@ function render() {
     html += `<h3>📂 Your folders, kept exactly as they are</h3>`;
     for (const name of [...kept.keys()].sort((a, b) => a.localeCompare(b))) {
       const k = kept.get(name);
-      html += `<details><summary><span class="name kept">${escapeHtml(name)}</span><span class="meta">${k.count} files · ${formatBytes(k.size)}</span></summary>` +
+      html += `<details><summary><span class="name kept">${escapeHtml(name)}</span><span class="meta">${k.count} file${k.count === 1 ? "" : "s"} · ${formatBytes(k.size)}</span></summary>` +
         (k.files.length ? fileList(k.files.map(f => escapeHtml(f.slice(name.length + 1)))) : `<p class="meta">Empty folder</p>`) +
         `</details>`;
     }
@@ -478,6 +481,7 @@ $("zipBtn").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
+
 </script>
 </body>
 </html>
