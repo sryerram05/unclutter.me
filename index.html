@@ -63,12 +63,6 @@
   summary .name.kept::before { content: "📂 "; }
   h3 { font-size: 0.95rem; margin: 18px 0 6px; color: var(--muted); font-weight: 600; }
   h3:first-child { margin-top: 0; }
-  #folderList { margin-top: 12px; }
-  .folder-row { display: flex; justify-content: space-between; align-items: center; gap: 12px;
-                padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
-  .folder-row .fname { overflow-wrap: anywhere; }
-  .folder-row select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
-                       background: var(--card); color: var(--ink); max-width: 100%; }
   .meta { color: var(--muted); font-size: 0.88rem; }
   summary .meta { color: var(--muted); font-size: 0.88rem; white-space: nowrap; }
   ul.files { margin: 6px 0 4px; padding-left: 22px; max-height: 220px; overflow: auto; font-size: 0.88rem; color: var(--muted); }
@@ -77,6 +71,8 @@
   progress { width: 100%; height: 10px; margin-top: 12px; }
   .status { font-size: 0.9rem; color: var(--muted); margin-top: 8px; min-height: 1.3em; }
   .error { color: var(--warn); }
+  .note { margin-top: 14px; padding: 10px 14px; border-radius: 10px; font-size: 0.9rem;
+          background: color-mix(in srgb, var(--warn) 10%, transparent); }
   .hidden { display: none; }
   footer { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top: 28px; }
 </style>
@@ -84,7 +80,7 @@
 <body>
 <main>
   <h1>🗂️ Unclutter.me</h1>
-  <p class="tagline">Sort the loose files in a messy folder into neat new folders: Documents, Images, Videos and more. Folders you already made are never split up, and you choose whether to keep them in place or tuck them into the new folders. Download the result as one zip.</p>
+  <p class="tagline">Drop in a messy folder and everything gets sorted into neat folders: Documents, Images, Videos, Code and more. Folders you already made are moved in whole, so nothing inside them changes. Download the result as one zip.</p>
 
   <div class="privacy">🔒 <strong>Your files never leave your computer.</strong> Everything happens inside this browser tab. Nothing is uploaded or stored. You can even turn off Wi-Fi after the page loads and it still works.</div>
 
@@ -110,16 +106,6 @@
     </div>
   </section>
 
-  <section class="card hidden" id="foldersCard">
-    <h2>Sort your existing folders too?</h2>
-    <p class="summary">Your folders never get split up. Whatever you choose, everything inside each folder stays exactly as it is.</p>
-    <div class="options">
-      <label><input type="radio" name="folderMode" value="keep" checked> No, keep my folders where they are</label>
-      <label><input type="radio" name="folderMode" value="move"> Yes, move each folder into the new folder that matches what's mostly inside it</label>
-    </div>
-    <div id="folderList"></div>
-  </section>
-
   <section class="card hidden" id="previewCard">
     <h2>Preview</h2>
     <div class="summary" id="summary"></div>
@@ -138,26 +124,34 @@
 <script>
 /* ---------- Categories ---------- */
 const CATEGORIES = [
-  ["Documents",      "pdf doc docx odt rtf txt md pages tex epub"],
-  ["Spreadsheets",   "xls xlsx xlsm ods csv tsv numbers"],
-  ["Presentations",  "ppt pptx odp key"],
-  ["Images",         "jpg jpeg png gif bmp webp heic heif svg tif tiff ico raw cr2 nef psd ai"],
-  ["Videos",         "mp4 mov avi mkv webm wmv flv m4v 3gp"],
-  ["Audio",          "mp3 wav aac flac ogg m4a wma aiff opus"],
-  ["Archives",       "zip rar 7z tar gz bz2 xz tgz"],
-  ["Installers",     "exe msi dmg pkg deb rpm apk appimage iso"],
-  ["Code",           "js ts jsx tsx py java c cpp h cs html css json xml yml yaml sh bat ipynb rb go rs php sql swift kt"],
-  ["Fonts",          "ttf otf woff woff2"],
+  ["Documents",          "pdf doc docx odt rtf txt md pages tex epub mobi log"],
+  ["Spreadsheets",       "xls xlsx xlsm ods csv tsv numbers"],
+  ["Presentations",      "ppt pptx odp key"],
+  ["Images",             "jpg jpeg png gif bmp webp heic heif svg tif tiff ico raw cr2 nef arw dng psd ai sketch fig xcf"],
+  ["Videos",             "mp4 mov avi mkv webm wmv flv m4v 3gp mts"],
+  ["Audio",              "mp3 wav aac flac ogg m4a wma aiff opus mid midi"],
+  ["Archives",           "zip rar 7z tar gz bz2 xz tgz"],
+  ["Apps & Installers",  "exe msi dmg pkg deb rpm apk appimage iso"],
+  ["Code",               "js mjs cjs ts jsx tsx py pyc ipynb java class jar kt kts gradle c cpp cc h hpp o cs go rs rb php swift m mm sh bash zsh bat ps1 html htm css scss sass less json xml yml yaml toml ini cfg sql r lua dart vue svelte iml lock map pde ino"],
+  ["Fonts",              "ttf otf woff woff2"],
 ];
 const EXT_TO_CAT = {};
 for (const [cat, exts] of CATEGORIES) for (const e of exts.split(" ")) EXT_TO_CAT[e] = cat;
 const CAT_ORDER = [...CATEGORIES.map(c => c[0]), "Other"];
 
-function categoryOf(name) {
+// Files and folders that only show up inside coding projects.
+const CODE_MARKERS = new Set([
+  ".git", ".gitignore", ".vscode", ".idea", "node_modules", "package.json", "pom.xml", "build.gradle",
+  "settings.gradle", ".project", ".classpath", "makefile", "cmakelists.txt", "requirements.txt",
+  "pyproject.toml", "setup.py", "cargo.toml", "go.mod", "gemfile", "composer.json", "readme.md", "src", "bin"
+]);
+
+function extOf(name) {
   const dot = name.lastIndexOf(".");
-  if (dot <= 0) return "Other";
-  return EXT_TO_CAT[name.slice(dot + 1).toLowerCase()] || "Other";
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
+function categoryOf(name) { return EXT_TO_CAT[extOf(name)] || "Other"; }
+function isMacApp(name) { return /\.app$/i.test(name); }
 function isJunk(name) {
   const n = name.toLowerCase();
   return n === ".ds_store" || n === "thumbs.db" || n === "desktop.ini" ||
@@ -169,102 +163,115 @@ function formatBytes(b) {
   do { b /= 1024; i++; } while (b >= 1024 && i < u.length - 1);
   return b.toFixed(b < 10 ? 1 : 0) + " " + u[i];
 }
+function plural(n, word) { return `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`; }
 
 /* ---------- Build the organized plan ----------
    items: [{ file, rel }]  rel = path inside the chosen folder, e.g. "photo.jpg" or "School/Math/hw1.pdf"
    dirs:  ["School", "School/Math", ...]  (folders seen, so empty ones are kept too)
-   folderMode: "keep" → the user's folders stay where they are
-               "move" → each folder moves (with everything inside it, untouched) into its suggested new folder
-   overrides:  { folderName: "" | categoryName }  per-folder choices that beat folderMode ("" = keep) */
-function buildPlan(items, dirs, mode, skipJunk, folderMode = "keep", overrides = {}) {
+   Everything gets sorted automatically:
+   - loose files go into the folder for their type (Documents, Images, ...)
+   - each of your folders moves, whole and unchanged inside, into the folder that fits what it holds
+   - Mac apps (.app) are left out: a browser can't copy them without breaking them */
+function folderCategory(stats) {
+  if (stats.isCode) return "Code";
+  // Ignore "Other" files when voting, so a few unknown files don't decide the result.
+  const votes = Object.entries(stats.catCounts).filter(([c]) => c !== "Other").sort((a, b) => b[1] - a[1]);
+  return votes.length ? votes[0][0] : "Other";
+}
+
+function buildPlan(items, dirs, mode, skipJunk) {
   const plan = [];
   const used = new Set();
-  const sorted = new Map();        // our new folder → { cat, count, size, subs: Map(sub → [entries]), folders: [] }
-  const kept = [];                 // user folders left at the top level
+  const groups = new Map();        // new top folder → { cat, count, size, loose: Map(sub → [entries]), folders: [] }
+  const leftOut = [];              // Mac apps we didn't copy
   let skipped = 0;
 
-  // 1) Look at each of the user's top-level folders: what's mostly inside it?
+  // 1) Look at what's inside each of your top-level folders.
   const folders = new Map();
   const touch = name => {
-    if (!folders.has(name)) folders.set(name, { name, count: 0, size: 0, files: [], catCounts: {} });
+    if (!folders.has(name)) folders.set(name, { name, count: 0, size: 0, catCounts: {}, isCode: false });
     return folders.get(name);
   };
-  for (const d of dirs) touch(d.split("/")[0]);
+  for (const d of dirs) {
+    const segs = d.split("/");
+    const f = touch(segs[0]);
+    if (segs.some((s, i) => i > 0 && CODE_MARKERS.has(s.toLowerCase()))) f.isCode = true;
+  }
   for (const it of items) {
     if (!it.rel.includes("/")) continue;
-    const f = touch(it.rel.split("/")[0]);
+    const segs = it.rel.split("/");
+    const f = touch(segs[0]);
+    if (segs.some((s, i) => i > 0 && CODE_MARKERS.has(s.toLowerCase()))) f.isCode = true;
     if (skipJunk && isJunk(it.file.name)) continue;
+    f.count++; f.size += it.file.size;
     const cat = categoryOf(it.file.name);
-    f.count++; f.size += it.file.size; f.files.push(it.rel);
     f.catCounts[cat] = (f.catCounts[cat] || 0) + 1;
   }
-  for (const f of folders.values()) {
-    f.suggested = Object.entries(f.catCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "Other";
-    f.choice = Object.prototype.hasOwnProperty.call(overrides, f.name)
-      ? overrides[f.name] : (folderMode === "move" ? f.suggested : "");
-  }
 
-  // 2) Our new folders never merge into a folder the user is keeping at the top.
-  const keptLower = new Set([...folders.values()].filter(f => !f.choice).map(f => f.name.toLowerCase()));
-  const folderNameFor = cat => keptLower.has(cat.toLowerCase()) ? `${cat} (sorted)` : cat;
-  const group = (top, cat) => {
-    if (!sorted.has(top)) sorted.set(top, { cat, count: 0, size: 0, subs: new Map(), folders: [] });
-    return sorted.get(top);
+  const group = cat => {
+    if (!groups.has(cat)) groups.set(cat, { cat, count: 0, size: 0, loose: new Map(), folders: [] });
+    return groups.get(cat);
   };
 
-  // 3) Decide where each user folder goes (its contents never change).
+  // 2) Decide where each folder goes. Its contents never change.
   const names = [...folders.keys()].sort((a, b) => a.localeCompare(b));
-  for (const name of names) used.add(name.toLowerCase());
   for (const name of names) {
     const f = folders.get(name);
-    if (!f.choice) { f.dest = name; kept.push(f); continue; }
-    const top = folderNameFor(f.choice);
-    let dest = `${top}/${name}`, n = 2;
-    while (used.has(dest.toLowerCase())) dest = `${top}/${name} (${n++})`;
+    if (isMacApp(name)) { f.dest = null; leftOut.push(f); continue; }
+    const cat = folderCategory(f);
+    let dest = `${cat}/${name}`, n = 2;
+    while (used.has(dest.toLowerCase())) dest = `${cat}/${name} (${n++})`;
     used.add(dest.toLowerCase());
     f.dest = dest;
-    const g = group(top, f.choice);
+    const g = group(cat);
     g.count += f.count; g.size += f.size;
-    g.folders.push({ name: dest.slice(top.length + 1), count: f.count, size: f.size });
+    g.folders.push({ name: dest.slice(cat.length + 1), count: f.count, size: f.size });
   }
-  const remap = rel => { const top = rel.split("/")[0]; return folders.get(top).dest + rel.slice(top.length); };
+  const remap = rel => {
+    const top = rel.split("/")[0];
+    const dest = folders.get(top).dest;
+    return dest === null ? null : dest + rel.slice(top.length);
+  };
 
-  for (const d of dirs) plan.push({ dir: true, path: remap(d) });
+  for (const d of dirs) {
+    const path = remap(d);
+    if (path !== null) plan.push({ dir: true, path });
+  }
   for (const it of items) {
     if (!it.rel.includes("/")) continue;
     if (skipJunk && isJunk(it.file.name)) { skipped++; continue; }
     const path = remap(it.rel);
+    if (path === null) continue;
     plan.push({ file: it.file, path });
     used.add(path.toLowerCase());
   }
 
-  // 4) Loose files go into the new folders.
+  // 3) Loose files go into the folder for their type.
   for (const it of items) {
     if (it.rel.includes("/")) continue;
     const file = it.file;
     if (skipJunk && isJunk(file.name)) { skipped++; continue; }
     const cat = categoryOf(file.name);
-    const top = folderNameFor(cat);
     const sub = mode === "typeYear" ? String(new Date(file.lastModified || Date.now()).getFullYear()) : "";
-    const folder = sub ? `${top}/${sub}` : top;
+    const folder = sub ? `${cat}/${sub}` : cat;
     const dot = file.name.lastIndexOf(".");
     const base = dot > 0 ? file.name.slice(0, dot) : file.name;
     const ext  = dot > 0 ? file.name.slice(dot) : "";
     let path = `${folder}/${file.name}`, n = 2;
     while (used.has(path.toLowerCase())) path = `${folder}/${base} (${n++})${ext}`;
     used.add(path.toLowerCase());
-    const entry = { file, path, cat };
+    const entry = { file, path };
     plan.push(entry);
-    const g = group(top, cat);
+    const g = group(cat);
     g.count++; g.size += file.size;
-    if (!g.subs.has(sub)) g.subs.set(sub, []);
-    g.subs.get(sub).push(entry);
+    if (!g.loose.has(sub)) g.loose.set(sub, []);
+    g.loose.get(sub).push(entry);
   }
-  return { plan, skipped, kept, sorted, folders: names.map(n => folders.get(n)) };
+  return { plan, skipped, groups, leftOut };
 }
 
 // ZIP-START
-/* ---------- Tiny zip writer (no compression, runs in the browser) ---------- */
+/* ---------- Tiny zip writer (no compression, ZIP64 for big folders, runs in the browser) ---------- */
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -298,95 +305,143 @@ function dosDateTime(ms) {
     date: ((Math.min(y, 2107) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
   };
 }
-const ZIP_MAX_BYTES = 0xFFFFFFFF - 1024 * 1024 * 64; // keep under the 4 GB classic-zip limit
-const ZIP_MAX_FILES = 65535;
 
 // entries: [{ file, path }] or [{ dir: true, path }] → returns a Blob (the zip).
-// Files are referenced, not copied into memory.
-async function buildZip(entries, onProgress) {
+// Files are referenced, not copied into memory. Switches to ZIP64 automatically past 4 GB / 65,535 entries.
+async function buildZip(entries, onProgress, forceZip64 = false) {
   const enc = new TextEncoder();
   const parts = [], central = [];
   let offset = 0, doneBytes = 0;
   const totalBytes = entries.reduce((s, e) => s + (e.dir ? 0 : e.file.size), 0);
-  if (entries.length > ZIP_MAX_FILES) throw new Error(`Too many files (${entries.length}). The limit is ${ZIP_MAX_FILES}.`);
-  if (totalBytes > ZIP_MAX_BYTES) throw new Error(`That's ${formatBytes(totalBytes)}. This prototype can zip up to about 4 GB at a time.`);
+  const z64 = forceZip64 || totalBytes > 0xF0000000 || entries.length > 0xFFF0;
+  const MAX32 = 0xFFFFFFFF;
 
   for (const e of entries) {
     const isDir = !!e.dir;
     const name = enc.encode(isDir ? e.path.replace(/\/?$/, "/") : e.path);
-    const crc = isDir ? 0 : await crc32OfFile(e.file, n => { doneBytes += n; onProgress && onProgress(doneBytes, totalBytes); });
+    let crc = 0;
+    if (!isDir) {
+      try {
+        crc = await crc32OfFile(e.file, n => { doneBytes += n; onProgress && onProgress(doneBytes, totalBytes); });
+      } catch (err) {
+        throw new Error(`Couldn't read “${e.path.split("/").pop()}”. It may have been moved or deleted. Choose the folder again and retry.`);
+      }
+    }
     const { time, date } = dosDateTime(isDir ? Date.now() : e.file.lastModified);
     const size = isDir ? 0 : e.file.size;
+    const version = z64 ? 45 : 20;
 
-    const local = new DataView(new ArrayBuffer(30));
+    // Local header (+ ZIP64 extra with the real sizes)
+    const local = new DataView(new ArrayBuffer(30 + (z64 ? 20 : 0)));
     local.setUint32(0, 0x04034b50, true);
-    local.setUint16(4, 20, true);
+    local.setUint16(4, version, true);
     local.setUint16(6, 0x0800, true);  // UTF-8 file names
     local.setUint16(8, 0, true);       // stored (no compression)
     local.setUint16(10, time, true);
     local.setUint16(12, date, true);
     local.setUint32(14, crc, true);
-    local.setUint32(18, size, true);
-    local.setUint32(22, size, true);
+    local.setUint32(18, z64 ? MAX32 : size, true);
+    local.setUint32(22, z64 ? MAX32 : size, true);
     local.setUint16(26, name.length, true);
-    local.setUint16(28, 0, true);
-    parts.push(local.buffer, name);
+    local.setUint16(28, z64 ? 20 : 0, true);
+    const localExtra = new DataView(new ArrayBuffer(z64 ? 20 : 0));
+    if (z64) {
+      localExtra.setUint16(0, 0x0001, true);
+      localExtra.setUint16(2, 16, true);
+      localExtra.setBigUint64(4, BigInt(size), true);
+      localExtra.setBigUint64(12, BigInt(size), true);
+    }
+    parts.push(local.buffer.slice(0, 30), name, localExtra.buffer);
     if (!isDir) parts.push(e.file);
 
+    // Central directory record (+ ZIP64 extra with sizes and offset)
     const cd = new DataView(new ArrayBuffer(46));
     cd.setUint32(0, 0x02014b50, true);
-    cd.setUint16(4, 20, true);
-    cd.setUint16(6, 20, true);
+    cd.setUint16(4, (3 << 8) | version, true);  // made by Unix, so folder/file flags are understood
+    cd.setUint16(6, version, true);
     cd.setUint16(8, 0x0800, true);
     cd.setUint16(10, 0, true);
     cd.setUint16(12, time, true);
     cd.setUint16(14, date, true);
     cd.setUint32(16, crc, true);
-    cd.setUint32(20, size, true);
-    cd.setUint32(24, size, true);
+    cd.setUint32(20, z64 ? MAX32 : size, true);
+    cd.setUint32(24, z64 ? MAX32 : size, true);
     cd.setUint16(28, name.length, true);
-    cd.setUint32(38, isDir ? 0x10 : 0, true); // directory attribute
-    cd.setUint32(42, offset, true);
-    central.push(cd.buffer, name);
+    cd.setUint16(30, z64 ? 28 : 0, true);
+    const mode = isDir ? 0o040755 : 0o100644;
+    cd.setUint32(38, ((mode << 16) | (isDir ? 0x10 : 0)) >>> 0, true);
+    cd.setUint32(42, z64 ? MAX32 : offset, true);
+    const cdExtra = new DataView(new ArrayBuffer(z64 ? 28 : 0));
+    if (z64) {
+      cdExtra.setUint16(0, 0x0001, true);
+      cdExtra.setUint16(2, 24, true);
+      cdExtra.setBigUint64(4, BigInt(size), true);
+      cdExtra.setBigUint64(12, BigInt(size), true);
+      cdExtra.setBigUint64(20, BigInt(offset), true);
+    }
+    central.push(cd.buffer, name, cdExtra.buffer);
 
-    offset += 30 + name.length + size;
+    offset += 30 + name.length + (z64 ? 20 : 0) + size;
   }
   const cdSize = central.reduce((s, p) => s + p.byteLength, 0);
+  const tail = [];
+  if (z64) {
+    const rec = new DataView(new ArrayBuffer(56));
+    rec.setUint32(0, 0x06064b50, true);
+    rec.setBigUint64(4, 44n, true);
+    rec.setUint16(12, 45, true);
+    rec.setUint16(14, 45, true);
+    rec.setBigUint64(24, BigInt(entries.length), true);
+    rec.setBigUint64(32, BigInt(entries.length), true);
+    rec.setBigUint64(40, BigInt(cdSize), true);
+    rec.setBigUint64(48, BigInt(offset), true);
+    const loc = new DataView(new ArrayBuffer(20));
+    loc.setUint32(0, 0x07064b50, true);
+    loc.setBigUint64(8, BigInt(offset + cdSize), true);
+    loc.setUint32(16, 1, true);
+    tail.push(rec.buffer, loc.buffer);
+  }
   const end = new DataView(new ArrayBuffer(22));
   end.setUint32(0, 0x06054b50, true);
-  end.setUint16(8, entries.length, true);
-  end.setUint16(10, entries.length, true);
-  end.setUint32(12, cdSize, true);
-  end.setUint32(16, offset, true);
-  return new Blob([...parts, ...central, end.buffer], { type: "application/zip" });
+  end.setUint16(8, z64 ? 0xFFFF : entries.length, true);
+  end.setUint16(10, z64 ? 0xFFFF : entries.length, true);
+  end.setUint32(12, z64 ? MAX32 : cdSize, true);
+  end.setUint32(16, z64 ? MAX32 : offset, true);
+  tail.push(end.buffer);
+  return new Blob([...parts, ...central, ...tail], { type: "application/zip" });
 }
 // ZIP-END
 
 /* ---------- Reading folders (picker + drag and drop) ---------- */
 function readAllEntries(dirReader) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     const all = [];
     const next = () => dirReader.readEntries(batch => {
       if (!batch.length) resolve(all); else { all.push(...batch); next(); }
-    }, reject);
+    }, () => resolve(all));   // a folder we can't open is skipped, not fatal
     next();
   });
 }
-// Collects { file, path } for files and path strings for folders, paths relative to `prefix`.
-async function walkEntry(entry, prefix, files, dirs) {
+// Collects { file, rel } for files and path strings for folders. Unreadable files are counted, not fatal.
+async function walkEntry(entry, prefix, out, onCount) {
   const path = prefix ? `${prefix}/${entry.name}` : entry.name;
   if (entry.isFile) {
-    files.push({ file: await new Promise((res, rej) => entry.file(res, rej)), rel: path });
+    try {
+      out.items.push({ file: await new Promise((res, rej) => entry.file(res, rej)), rel: path });
+      onCount && onCount(out.items.length);
+    } catch { out.unreadable++; }
   } else if (entry.isDirectory) {
-    dirs.push(path);
+    out.dirs.push(path);
     const children = await readAllEntries(entry.createReader());
-    for (const child of children) await walkEntry(child, path, files, dirs);
+    // Read the files in this folder in parallel, then go into subfolders one by one.
+    await Promise.all(children.filter(c => c.isFile).map(c => walkEntry(c, path, out, onCount)));
+    for (const c of children.filter(c => c.isDirectory)) await walkEntry(c, path, out, onCount);
   }
 }
 
 /* ---------- UI ---------- */
 const $ = id => document.getElementById(id);
-let state = { items: [], dirs: [], rootName: "Organized", overrides: {} };
+let state = { items: [], dirs: [], rootName: "Organized", unreadable: 0 };
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -394,93 +449,69 @@ function escapeHtml(s) {
 function fileList(names) {
   return `<ul class="files">` +
     names.slice(0, 300).map(n => `<li>${n}</li>`).join("") +
-    (names.length > 300 ? `<li>…and ${names.length - 300} more</li>` : "") + `</ul>`;
+    (names.length > 300 ? `<li>…and ${(names.length - 300).toLocaleString()} more</li>` : "") + `</ul>`;
 }
-
-function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
 
 function render() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  const folderMode = document.querySelector('input[name="folderMode"]:checked').value;
-  const result = buildPlan(state.items, state.dirs, mode, $("skipJunk").checked, folderMode, state.overrides);
-  const { plan, skipped, kept, sorted, folders } = result;
+  const { plan, skipped, groups, leftOut } = buildPlan(state.items, state.dirs, mode, $("skipJunk").checked);
 
-  // ---- The "your folders" question ----
-  $("foldersCard").classList.toggle("hidden", folders.length === 0);
-  $("folderList").innerHTML = folders.map(f => {
-    const opts = [`<option value="">Keep where it is</option>`].concat(
-      CAT_ORDER.map(c => `<option value="${c}"${f.choice === c ? " selected" : ""}>Move into ${c}${c === f.suggested ? " (suggested)" : ""}</option>`)
-    ).join("");
-    return `<div class="folder-row">
-      <span class="fname">📂 ${escapeHtml(f.name)} <span class="meta">${plural(f.count, "file")}</span></span>
-      <select data-folder="${escapeHtml(f.name)}" aria-label="Where should ${escapeHtml(f.name)} go?">${opts}</select>
-    </div>`;
-  }).join("");
-  $("folderList").querySelectorAll("select").forEach(sel => {
-    if (sel.value === "" ) sel.querySelector('option[value=""]').selected = true;
-    sel.addEventListener("change", () => { state.overrides[sel.dataset.folder] = sel.value; render(); });
-  });
-
-  // ---- Summary ----
   const files = plan.filter(p => !p.dir);
   const total = files.reduce((s, p) => s + p.file.size, 0);
-  const looseCount = [...sorted.values()].reduce((s, g) => s + [...g.subs.values()].reduce((a, l) => a + l.length, 0), 0);
-  const movedCount = folders.length - kept.length;
+  const folderCount = [...groups.values()].reduce((s, g) => s + g.folders.length, 0);
   $("summary").textContent =
-    `${plural(files.length, "file")} · ${formatBytes(total)} · ${plural(looseCount, "loose file")} sorted` +
-    (movedCount ? ` · ${plural(movedCount, "folder")} moved` : "") +
-    (kept.length ? ` · ${plural(kept.length, "folder")} kept in place` : "") +
+    `${plural(files.length, "file")} · ${formatBytes(total)} · sorted into ${plural(groups.size, "folder")}` +
+    (folderCount ? ` · ${folderCount.toLocaleString()} of your folder${folderCount === 1 ? "" : "s"} moved whole` : "") +
     (skipped ? ` · ${plural(skipped, "junk file")} skipped` : "");
 
-  // ---- Preview tree ----
   let html = "";
-  if (sorted.size) {
-    html += `<h3>✨ New folders</h3>`;
-    const order = [...sorted.keys()].sort((a, b) =>
-      CAT_ORDER.indexOf(sorted.get(a).cat) - CAT_ORDER.indexOf(sorted.get(b).cat) || a.localeCompare(b));
-    for (const top of order) {
-      const g = sorted.get(top);
-      html += `<details><summary><span class="name new">${escapeHtml(top)}</span><span class="meta">${plural(g.count, "file")} · ${formatBytes(g.size)}</span></summary>`;
-      for (const f of g.folders.sort((a, b) => a.name.localeCompare(b.name))) {
-        html += `<div class="sub">📂 <strong>${escapeHtml(f.name)}</strong> <span class="meta">(your folder, ${plural(f.count, "file")}, unchanged inside)</span></div>`;
-      }
-      for (const sub of [...g.subs.keys()].sort().reverse()) {
-        const entries = g.subs.get(sub);
-        const names = entries.map(e => `${escapeHtml(e.path.split("/").pop())} <span>· ${formatBytes(e.file.size)}</span>`);
-        html += sub ? `<div class="sub"><strong>📁 ${escapeHtml(sub)}</strong> <span class="meta">(${entries.length})</span>${fileList(names)}</div>` : fileList(names);
-      }
-      html += `</details>`;
+  const order = [...groups.keys()].sort((a, b) => CAT_ORDER.indexOf(a) - CAT_ORDER.indexOf(b));
+  for (const cat of order) {
+    const g = groups.get(cat);
+    html += `<details><summary><span class="name new">${escapeHtml(cat)}</span><span class="meta">${plural(g.count, "file")} · ${formatBytes(g.size)}</span></summary>`;
+    for (const f of g.folders) {
+      html += `<div class="sub">📂 <strong>${escapeHtml(f.name)}</strong> <span class="meta">your folder · ${plural(f.count, "file")} · unchanged inside</span></div>`;
     }
+    for (const sub of [...g.loose.keys()].sort().reverse()) {
+      const entries = g.loose.get(sub);
+      const names = entries.map(e => `${escapeHtml(e.path.split("/").pop())} <span>· ${formatBytes(e.file.size)}</span>`);
+      html += sub ? `<div class="sub"><strong>📁 ${escapeHtml(sub)}</strong> <span class="meta">(${entries.length})</span>${fileList(names)}</div>` : fileList(names);
+    }
+    html += `</details>`;
   }
-  if (kept.length) {
-    html += `<h3>📂 Your folders, kept in place</h3>`;
-    for (const k of kept) {
-      html += `<details><summary><span class="name kept">${escapeHtml(k.name)}</span><span class="meta">${plural(k.count, "file")} · ${formatBytes(k.size)}</span></summary>` +
-        (k.files.length ? fileList(k.files.map(f => escapeHtml(f.slice(k.name.length + 1)))) : `<p class="meta">Empty folder</p>`) +
-        `</details>`;
-    }
+  if (leftOut.length) {
+    html += `<div class="note">⚠️ <strong>Left out: ${leftOut.map(f => escapeHtml(f.name)).join(", ")}</strong><br>
+      Mac apps can't be copied by a web browser without breaking them, so they aren't in the zip. They're still safe in your original folder. To tidy them, drag them into your Applications folder.</div>`;
+  }
+  if (state.unreadable) {
+    html += `<div class="note">⚠️ ${plural(state.unreadable, "file")} couldn't be read (often system or locked files) and ${state.unreadable === 1 ? "isn't" : "aren't"} in the zip.</div>`;
   }
   $("tree").innerHTML = html || "<p>No files to organize.</p>";
   $("zipBtn").disabled = plan.length === 0;
   return plan;
 }
 
-function loadItems(items, dirs, rootName) {
-  state = { items: items.filter(i => i && i.file), dirs, rootName: rootName || "Organized", overrides: {} };
+function loadItems(items, dirs, rootName, unreadable = 0) {
+  state = { items: items.filter(i => i && i.file), dirs, rootName: rootName || "Organized", unreadable };
   const ok = state.items.length > 0 || dirs.length > 0;
-  $("loadStatus").textContent = ok ? `Loaded ${plural(state.items.length, "file")} from “${state.rootName}”.` : "No files found in that folder.";
-  $("loadStatus").classList.remove("error");
+  $("loadStatus").textContent = ok
+    ? `Loaded ${plural(state.items.length, "file")} from “${state.rootName}”.`
+    : "That folder looks empty. If it isn't, try choosing it with the click option instead of dragging.";
+  $("loadStatus").classList.toggle("error", !ok);
   $("zipStatus").textContent = "";
   $("progress").classList.add("hidden");
   $("optionsCard").classList.toggle("hidden", !ok);
   $("previewCard").classList.toggle("hidden", !ok);
-  if (ok) render(); else $("foldersCard").classList.add("hidden");
+  if (ok) {
+    render();
+    $("previewCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 // Folder picker: paths look like "Downloads/School/hw1.pdf" → strip the chosen folder's own name.
 $("folderInput").addEventListener("change", e => {
   const list = [...e.target.files];
-  if (!list.length) return;
+  if (!list.length) { $("loadStatus").textContent = ""; return; }
   const root = (list[0].webkitRelativePath || "").split("/")[0] || "Organized";
   const items = [], dirSet = new Set();
   for (const f of list) {
@@ -490,50 +521,63 @@ $("folderInput").addEventListener("change", e => {
     for (let i = 1; i < segs.length; i++) dirSet.add(segs.slice(0, i).join("/"));
   }
   loadItems(items, [...dirSet], root);
+  e.target.value = "";   // so choosing the same folder again still works
 });
 $("filesInput").addEventListener("change", e => {
   loadItems([...e.target.files].map(f => ({ file: f, rel: f.name })), [], "Organized");
+  e.target.value = "";
 });
 
 const drop = $("drop");
-drop.addEventListener("click", () => $("folderInput").click());
-drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("folderInput").click(); } });
+const openPicker = () => {
+  $("loadStatus").classList.remove("error");
+  $("loadStatus").textContent = "Choose a folder… (your browser may ask you to confirm; nothing is actually uploaded)";
+  $("folderInput").click();
+};
+drop.addEventListener("click", openPicker);
+drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } });
 $("pickFiles").addEventListener("click", () => $("filesInput").click());
 
+// Stop the browser from opening a file if it's dropped anywhere else on the page.
+["dragover", "drop"].forEach(t => window.addEventListener(t, e => e.preventDefault()));
 ["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
-["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
 drop.addEventListener("drop", async e => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  // Grab the entries right away: the browser clears them once this handler yields.
+  const entries = [...(e.dataTransfer.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  const plainFiles = [...(e.dataTransfer.files || [])];
+  $("loadStatus").classList.remove("error");
   $("loadStatus").textContent = "Reading folder…";
+  const out = { items: [], dirs: [], unreadable: 0 };
+  const onCount = n => { if (n % 250 === 0) $("loadStatus").textContent = `Reading folder… ${n.toLocaleString()} files so far`; };
   try {
-    const entries = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
-    const items = [], dirs = [];
     let root = "Organized";
     if (entries.length === 1 && entries[0].isDirectory) {
-      // One folder dropped: organize what's inside it.
-      root = entries[0].name;
+      root = entries[0].name;   // one folder dropped: organize what's inside it
       const children = await readAllEntries(entries[0].createReader());
-      for (const c of children) await walkEntry(c, "", items, dirs);
+      await Promise.all(children.filter(c => c.isFile).map(c => walkEntry(c, "", out, onCount)));
+      for (const c of children.filter(c => c.isDirectory)) await walkEntry(c, "", out, onCount);
     } else if (entries.length) {
-      // Several things dropped: dropped folders are kept as-is, dropped files get sorted.
-      for (const en of entries) await walkEntry(en, "", items, dirs);
+      for (const en of entries) await walkEntry(en, "", out, onCount);
     } else {
-      for (const f of e.dataTransfer.files) items.push({ file: f, rel: f.name });
+      for (const f of plainFiles) out.items.push({ file: f, rel: f.name });
     }
-    loadItems(items, dirs, root);
+    loadItems(out.items, out.dirs, root, out.unreadable);
   } catch (err) {
-    $("loadStatus").textContent = "Couldn't read that folder. Try the click-to-choose option instead.";
+    $("loadStatus").textContent = "Couldn't read that folder. Try clicking the box and choosing it instead.";
     $("loadStatus").classList.add("error");
   }
 });
 
 document.querySelectorAll('input[name="mode"], #skipJunk').forEach(el => el.addEventListener("change", render));
-document.querySelectorAll('input[name="folderMode"]').forEach(el => el.addEventListener("change", () => { state.overrides = {}; render(); }));
 
 $("resetBtn").addEventListener("click", () => {
-  state = { items: [], dirs: [], rootName: "Organized", overrides: {} };
-  $("folderInput").value = ""; $("filesInput").value = "";
-  $("optionsCard").classList.add("hidden"); $("previewCard").classList.add("hidden"); $("foldersCard").classList.add("hidden");
+  state = { items: [], dirs: [], rootName: "Organized", unreadable: 0 };
+  $("optionsCard").classList.add("hidden"); $("previewCard").classList.add("hidden");
   $("loadStatus").textContent = "";
+  window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
 $("zipBtn").addEventListener("click", async () => {
@@ -544,14 +588,17 @@ $("zipBtn").addEventListener("click", async () => {
   btn.disabled = true; bar.classList.remove("hidden"); bar.value = 0;
   status.classList.remove("error"); status.textContent = "Building your zip…";
   try {
-    const blob = await buildZip(zipEntries, (done, total) => { bar.value = total ? (done / total) * 100 : 100; });
+    const blob = await buildZip(zipEntries, (done, total) => {
+      bar.value = total ? (done / total) * 100 : 100;
+      status.textContent = `Building your zip… ${formatBytes(done)} of ${formatBytes(total)}`;
+    });
     bar.value = 100;
     const fileName = `${state.rootName}-organized.zip`.replace(/[\\/:*?"<>|]/g, "_");
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = fileName;
     document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
     status.textContent = `Done! Saved ${fileName} (${formatBytes(blob.size)}). Your original files weren't changed.`;
   } catch (err) {
     status.textContent = err.message || "Something went wrong while building the zip.";
@@ -560,7 +607,6 @@ $("zipBtn").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
-
 </script>
 </body>
 </html>
